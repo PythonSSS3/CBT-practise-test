@@ -768,7 +768,7 @@ Also supported:
 
       <section id="sharePanel" class="panel share-panel hidden">
         <h2>Share student link</h2>
-        <p class="hint" style="margin-bottom: 12px;">Anyone with this link can attempt the sheet in their browser. The key is stored inside the link, so use it for practice or host it with a backend if answer secrecy is required.</p>
+        <p class="hint" style="margin-bottom: 12px;">Anyone with this link can attempt the sheet in their browser. Questions PDFs are NOT included for shorter links.</p>
         <div class="link-box">
           <input id="shareLink" readonly />
           <button id="copyLinkBtn" class="btn primary" type="button">Copy</button>
@@ -829,6 +829,7 @@ Also supported:
     </div>
   </div>
 
+  <script src="https://cdn.jsdelivr.net/npm/lz-string@1.5.0/libs/lz-string.min.js"></script>
   <script>
     const letters = ["A", "B", "C", "D", "E"];
     const state = {
@@ -859,12 +860,18 @@ Also supported:
     }
 
     function encodeConfig() {
-      const payload = JSON.stringify({ config: state.config, key: state.key, questionPdf: state.questionPdf });
-      return btoa(unescape(encodeURIComponent(payload)));
+      const payload = JSON.stringify({ config: state.config, key: state.key });
+      return LZString.compressToEncodedURIComponent(payload);
     }
 
     function decodeConfig(value) {
-      return JSON.parse(decodeURIComponent(escape(atob(value))));
+      try {
+        const decompressed = LZString.decompressFromEncodedURIComponent(value);
+        return JSON.parse(decompressed);
+      } catch (e) {
+        console.error("Failed to decode config:", e);
+        return null;
+      }
     }
 
     function parseAnswerKey(text, questionCount, optionCount) {
@@ -1002,344 +1009,251 @@ Also supported:
     }
 
     function updateKeyPreview() {
-      const entries = Object.entries(state.key).sort((a, b) => Number(a[0]) - Number(b[0]));
-      if (!entries.length) {
-        $("keyPreview").textContent = "No answer key loaded yet.";
-        return;
-      }
-      const preview = entries.slice(0, 80).map(([q, a]) => `${q}:${a}`).join("  ");
-      $("keyPreview").textContent = `${entries.length} answers stored. ${preview}${entries.length > 80 ? " ..." : ""}`;
+      const preview = Object.entries(state.key).map(([q, a]) => `${q}. ${a}`).join(" • ");
+      $("keyPreview").textContent = preview || "No answer key loaded yet.";
     }
 
-    function buildFromText() {
-      readTeacherConfig();
-      const parsed = parseAnswerKey($("rawKey").value, state.config.questions, state.config.options);
-      state.key = parsed;
-      renderSheet();
-      const missing = state.config.questions - Object.keys(parsed).length;
-      if (missing > 0) {
-        setStatus($("teacherStatus"), `${Object.keys(parsed).length} answers found. ${missing} questions have no stored answer yet.`, "warn");
-      } else {
-        setStatus($("teacherStatus"), `Answer key ready with ${Object.keys(parsed).length} answers.`, "good");
-      }
-      createShareLink();
-    }
-
-    function createShareLink() {
+    function generateStudentLink() {
       const encoded = encodeConfig();
-      const base = location.href.split("#")[0];
-      $("shareLink").value = `${base}#test=${encoded}`;
-      $("sharePanel").classList.remove("hidden");
-      if ($("shareLink").value.length > 1800000) {
-        setStatus($("teacherStatus"), "Question PDF is stored locally, but the student link is very large. If sharing fails, use a smaller PDF or host the file online.", "warn");
-      }
-    }
-
-    function switchMode(mode) {
-      state.mode = mode;
-      if (mode !== "student") setTestFocus(false);
-      $("teacherTab").classList.toggle("active", mode === "teacher");
-      $("studentTab").classList.toggle("active", mode === "student");
-      $("teacherControls").classList.toggle("hidden", mode !== "teacher");
-      $("studentControls").classList.toggle("hidden", mode !== "student");
-      $("sharePanel").classList.toggle("hidden", mode !== "teacher" || !Object.keys(state.key).length);
-      $("keyPanel").classList.toggle("hidden", mode !== "teacher");
-      $("pageSubtitle").textContent = mode === "teacher"
-        ? "Upload a PDF answer key or paste answers, then build a student sheet."
-        : "Fill the OMR bubbles and submit when finished.";
-      renderSheet();
-    }
-
-    async function enterFullscreen() {
-      const target = document.documentElement;
-      if (!document.fullscreenElement && target.requestFullscreen) {
-        try {
-          await target.requestFullscreen();
-          setFullscreenBlocked(false);
-        } catch {
-          setStatus($("sheetStatus"), "Fullscreen could not start in this browser, but the test is still running.", "warn");
-        }
-      }
-    }
-
-    async function exitFullscreen() {
-      if (document.fullscreenElement && document.exitFullscreen) {
-        try {
-          await document.exitFullscreen();
-        } catch {
-          return;
-        }
-      }
-    }
-
-    function setTestFocus(active) {
-      document.body.classList.toggle("test-active", active);
-      $("activeTestBar").classList.toggle("hidden", !active);
-      if (!active) setFullscreenBlocked(false);
-    }
-
-    function setFullscreenBlocked(blocked) {
-      document.body.classList.toggle("test-blocked", blocked);
-      $("fullscreenBlocker").classList.toggle("hidden", !blocked);
-      document.querySelectorAll("#questionGrid input").forEach((input) => {
-        input.disabled = blocked || state.submitted || (state.mode === "student" && !state.started);
+      const params = new URLSearchParams({
+        student: "1",
+        data: encoded
       });
+      return `${window.location.origin}${window.location.pathname}?${params.toString()}`;
     }
 
-    function handleFullscreenChange() {
-      if (state.started && !state.submitted && state.mode === "student" && !document.fullscreenElement) {
-        setFullscreenBlocked(true);
-      } else if (document.fullscreenElement) {
-        setFullscreenBlocked(false);
-      }
-    }
-
-    async function startTimer() {
-      if (!Object.keys(state.key).length) {
-        setStatus($("sheetStatus"), "This test does not have an answer key yet.", "bad");
+    async function handleParse() {
+      readTeacherConfig();
+      const text = $("rawKey").value.trim();
+      if (!text) {
+        setStatus($("teacherStatus"), "Please paste an answer key or upload a PDF.", "warn");
         return;
       }
-      state.started = true;
-      state.submitted = false;
-      state.remainingSeconds = state.config.minutes * 60;
-      $("startBtn").disabled = true;
-      $("submitBtn").disabled = false;
-      $("focusSubmitBtn").disabled = false;
-      $("timerNote").textContent = "Test is running.";
-      renderSheet();
-      setTestFocus(true);
-      await enterFullscreen();
-      if (!document.fullscreenElement) setFullscreenBlocked(true);
-      clearInterval(state.timerId);
-      state.timerId = setInterval(() => {
-        state.remainingSeconds -= 1;
-        updateTimerDisplay(state.remainingSeconds);
-        $("timer").classList.toggle("warning", state.remainingSeconds <= 300);
-        $("focusTimer").classList.toggle("warning", state.remainingSeconds <= 300);
-        if (state.remainingSeconds <= 0) submitTest(true);
-      }, 1000);
-    }
-
-    function updateTimerDisplay(totalSeconds) {
-      const value = formatTime(totalSeconds);
-      $("timer").textContent = value;
-      $("focusTimer").textContent = value;
-    }
-
-    function formatTime(totalSeconds) {
-      const minutes = Math.max(0, Math.floor(totalSeconds / 60));
-      const seconds = Math.max(0, totalSeconds % 60);
-      return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
-    }
-
-    function submitTest(auto = false) {
-      if (state.submitted) return;
-      state.submitted = true;
-      state.started = false;
-      clearInterval(state.timerId);
-      setTestFocus(false);
-      exitFullscreen();
-      $("submitBtn").disabled = true;
-      $("focusSubmitBtn").disabled = true;
-      $("startBtn").disabled = false;
-      $("timerNote").textContent = auto ? "Time is over. Your sheet was submitted." : "Submitted.";
-
-      let correct = 0;
-      let wrong = 0;
-      let blank = 0;
-      let score = 0;
-      const rows = [];
-      for (let q = 1; q <= state.config.questions; q++) {
-        const student = state.answers[q] || "";
-        const actual = state.key[q] || "";
-        let status = "Unattempted";
-        if (!student) {
-          blank += 1;
-          score += state.config.blank;
-        } else if (student === actual) {
-          correct += 1;
-          score += state.config.positive;
-          status = "Correct";
-        } else {
-          wrong += 1;
-          score += state.config.negative;
-          status = "Wrong";
-        }
-        rows.push({ q, student: student || "-", actual: actual || "-", status });
+      state.key = parseAnswerKey(text, state.config.questions, state.config.options);
+      if (Object.keys(state.key).length === 0) {
+        setStatus($("teacherStatus"), "Could not parse any answers from the key.", "bad");
+        return;
       }
-
-      $("scoreValue").textContent = Number(score.toFixed(2));
-      $("correctValue").textContent = correct;
-      $("wrongValue").textContent = wrong;
-      $("blankValue").textContent = blank;
-      $("resultHeader").innerHTML = state.mode === "teacher"
-        ? "<th>Q</th><th>Your answer</th><th>Correct answer</th><th>Status</th>"
-        : "<th>Q</th><th>Your answer</th><th>Status</th>";
-      $("resultRows").innerHTML = rows.map((row) => state.mode === "teacher"
-        ? `<tr><td>${row.q}</td><td>${row.student}</td><td>${row.actual}</td><td>${row.status}</td></tr>`
-        : `<tr><td>${row.q}</td><td>${row.student}</td><td>${row.status}</td></tr>`
-      ).join("");
-      renderReview(rows);
-      $("resultPanel").classList.remove("hidden");
-      $("downloadBtn").disabled = false;
-      markBubbles();
+      renderSheet();
+      $("sharePanel").classList.remove("hidden");
+      $("shareLink").value = generateStudentLink();
+      setStatus($("teacherStatus"), `Parsed ${Object.keys(state.key).length} answers. Share the link!`, "good");
     }
 
-    function renderReview(rows) {
-      $("reviewGrid").innerHTML = rows.map((row) => {
-        const kind = row.status === "Correct" ? "correct" : row.status === "Wrong" ? "wrong" : "blank";
-        const mark = row.status === "Correct" ? state.config.positive : row.status === "Wrong" ? state.config.negative : state.config.blank;
-        const chips = letters.slice(0, state.config.options).map((option) =>
-          `<span class="review-chip ${row.student === option ? "selected" : ""}">${option}</span>`
-        ).join("");
-        const answerLine = state.mode === "teacher"
-          ? `<p class="hint">Marked: ${row.student} | Key: ${row.actual}</p>`
-          : `<p class="hint">Marked: ${row.student}</p>`;
-        return `<div class="review-card ${kind}">
-          <div class="review-top"><span>Q${row.q}</span><span>${signed(mark)}</span></div>
-          <div class="review-answer">${chips}</div>
-          ${answerLine}
-          <p class="hint">${row.status}</p>
-        </div>`;
-      }).join("");
-    }
-
-    function markBubbles() {
-      for (let q = 1; q <= state.config.questions; q++) {
-        document.querySelectorAll(`input[name="q${q}"]`).forEach((input) => {
-          input.disabled = true;
-          const bubble = input.closest(".bubble");
-          bubble.classList.remove("correct", "wrong");
-          if (state.mode === "teacher") {
-            if (input.value === state.key[q]) bubble.classList.add("correct");
-            if (input.checked && input.value !== state.key[q]) bubble.classList.add("wrong");
-          }
+    function handlePdfUpload(e, isQuestion = false) {
+      const file = e.target.files[0];
+      if (!file) return;
+      if (isQuestion) {
+        fileToDataUrl(file).then(url => {
+          state.questionPdf = { name: file.name, dataUrl: url };
+          renderQuestionPdf();
+        });
+      } else {
+        extractPdfText(file).then(text => {
+          $("rawKey").value = text;
+          setStatus($("teacherStatus"), "PDF extracted. Review and parse.", "good");
+        }).catch(err => {
+          setStatus($("teacherStatus"), `Failed to extract PDF: ${err.message}`, "bad");
         });
       }
     }
 
-    function clearAttempt() {
-      clearInterval(state.timerId);
-      state.answers = {};
-      state.started = false;
-      state.submitted = false;
-      $("startBtn").disabled = false;
-      $("submitBtn").disabled = true;
-      $("timer").classList.remove("warning");
-      $("focusTimer").classList.remove("warning");
-      updateTimerDisplay(state.config.minutes * 60);
-      $("timerNote").textContent = "Start the test when you are ready.";
-      $("resultPanel").classList.add("hidden");
-      setTestFocus(false);
-      exitFullscreen();
+    function loadStudentMode() {
+      const params = new URLSearchParams(window.location.search);
+      if (!params.has("student")) return;
+      const data = params.get("data");
+      if (!data) return;
+      const decoded = decodeConfig(data);
+      if (!decoded) return;
+      state.config = decoded.config;
+      state.key = decoded.key;
+      state.mode = "student";
+      $("teacherControls").classList.add("hidden");
+      $("studentControls").classList.remove("hidden");
+      $("studentTab").click();
       renderSheet();
     }
 
-    function downloadResult() {
-      const name = $("studentName").value || "Student";
-      const roll = $("studentId").value || "";
-      const rows = Array.from($("resultRows").children).map((tr) =>
-        Array.from(tr.children).map((td) => td.textContent).join(",")
-      );
-      const csv = [
-        `Name,${name}`,
-        `Roll,${roll}`,
-        `Test,${state.config.title}`,
-        `Score,${$("scoreValue").textContent}`,
-        "",
-        state.mode === "teacher" ? "Question,Your Answer,Correct Answer,Status" : "Question,Your Answer,Status",
-        ...rows
-      ].join("\n");
+    function startTest() {
+      state.started = true;
+      state.remainingSeconds = state.config.minutes * 60;
+      $("startBtn").disabled = true;
+      $("submitBtn").disabled = false;
+      document.body.classList.add("test-active");
+      $("activeTestBar").classList.remove("hidden");
+      document.querySelectorAll(".question input").forEach(input => input.disabled = false);
+      updateTimerDisplay(state.remainingSeconds);
+      state.timerId = setInterval(() => {
+        state.remainingSeconds--;
+        updateTimerDisplay(state.remainingSeconds);
+        if (state.remainingSeconds <= 0) {
+          clearInterval(state.timerId);
+          handleSubmit();
+        }
+      }, 1000);
+      if (document.documentElement.requestFullscreen) {
+        document.documentElement.requestFullscreen().catch(() => {
+          console.log("Fullscreen request denied");
+        });
+      }
+    }
+
+    function updateTimerDisplay(seconds) {
+      const mins = Math.floor(seconds / 60);
+      const secs = seconds % 60;
+      const display = `${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`;
+      $("timer").textContent = display;
+      $("focusTimer").textContent = display;
+      if (seconds <= 300) {
+        $("timer").classList.add("warning");
+        $("focusTimer").classList.add("warning");
+      }
+    }
+
+    function handleSubmit() {
+      clearInterval(state.timerId);
+      state.submitted = true;
+      document.body.classList.remove("test-active");
+      $("activeTestBar").classList.add("hidden");
+      const result = calculateScore();
+      renderResult(result);
+    }
+
+    function calculateScore() {
+      let correct = 0, wrong = 0, blank = 0;
+      for (let q = 1; q <= state.config.questions; q++) {
+        const userAns = state.answers[q];
+        const correctAns = state.key[q];
+        if (!userAns) blank++;
+        else if (userAns === correctAns) correct++;
+        else wrong++;
+      }
+      const score = correct * state.config.positive + wrong * state.config.negative + blank * state.config.blank;
+      return { correct, wrong, blank, score };
+    }
+
+    function renderResult(result) {
+      $("resultPanel").classList.remove("hidden");
+      $("scoreValue").textContent = result.score.toFixed(2);
+      $("correctValue").textContent = result.correct;
+      $("wrongValue").textContent = result.wrong;
+      $("blankValue").textContent = result.blank;
+
+      const reviewGrid = $("reviewGrid");
+      reviewGrid.innerHTML = "";
+      for (let q = 1; q <= state.config.questions; q++) {
+        const card = document.createElement("div");
+        card.className = "review-card";
+        const userAns = state.answers[q];
+        const correctAns = state.key[q];
+        if (!userAns) {
+          card.classList.add("blank");
+          card.innerHTML = `<div class="review-top"><strong>Q${q}</strong></div><div class="hint">Unattempted</div>`;
+        } else if (userAns === correctAns) {
+          card.classList.add("correct");
+          card.innerHTML = `<div class="review-top"><strong>Q${q}</strong>✓</div><div class="hint">Correct</div>`;
+        } else {
+          card.classList.add("wrong");
+          card.innerHTML = `<div class="review-top"><strong>Q${q}</strong>✗</div><div class="review-answer"><div class="review-chip selected">${userAns}</div><span class="hint">vs</span><div class="review-chip">${correctAns}</div></div>`;
+        }
+        reviewGrid.appendChild(card);
+      }
+
+      const tbody = $("resultRows");
+      tbody.innerHTML = "";
+      for (let q = 1; q <= state.config.questions; q++) {
+        const userAns = state.answers[q] || "—";
+        const correctAns = state.key[q] || "—";
+        const match = state.answers[q] === state.key[q];
+        const status = !state.answers[q] ? "Blank" : match ? "✓ Correct" : "✗ Wrong";
+        const row = document.createElement("tr");
+        row.innerHTML = `<td>${q}</td><td>${userAns}</td><td>${correctAns}</td><td>${status}</td>`;
+        tbody.appendChild(row);
+      }
+    }
+
+    $("teacherTab").addEventListener("click", () => {
+      $("teacherControls").classList.remove("hidden");
+      $("studentControls").classList.add("hidden");
+      $("teacherTab").classList.add("active");
+      $("studentTab").classList.remove("active");
+      state.mode = "teacher";
+    });
+
+    $("studentTab").addEventListener("click", () => {
+      $("teacherControls").classList.add("hidden");
+      $("studentControls").classList.remove("hidden");
+      $("studentTab").classList.add("active");
+      $("teacherTab").classList.remove("active");
+      state.mode = "student";
+    });
+
+    $("parseBtn").addEventListener("click", handleParse);
+    $("sampleBtn").addEventListener("click", () => {
+      const sample = "1. A\n2. B\n3. C\n4. D\n5. E";
+      $("rawKey").value = sample;
+      setStatus($("teacherStatus"), "Sample key loaded. Adjust as needed.", "good");
+    });
+
+    $("pdfFile").addEventListener("change", (e) => handlePdfUpload(e, false));
+    $("questionPdfFile").addEventListener("change", (e) => handlePdfUpload(e, true));
+
+    $("startBtn").addEventListener("click", startTest);
+    $("submitBtn").addEventListener("click", handleSubmit);
+    $("focusSubmitBtn").addEventListener("click", handleSubmit);
+    $("blockerSubmitBtn").addEventListener("click", handleSubmit);
+
+    $("clearBtn").addEventListener("click", () => {
+      state.answers = {};
+      document.querySelectorAll(".question input").forEach(input => input.checked = false);
+      setStatus($("teacherStatus"), "Answers cleared.", "good");
+    });
+
+    $("copyLinkBtn").addEventListener("click", () => {
+      $("shareLink").select();
+      document.execCommand("copy");
+      setStatus($("teacherStatus"), "Link copied to clipboard!", "good");
+    });
+
+    $("printBtn").addEventListener("click", () => window.print());
+
+    $("downloadBtn").addEventListener("click", () => {
+      const csv = generateCsv();
       const blob = new Blob([csv], { type: "text/csv" });
       const url = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = `${state.config.title.replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, "") || "omr-result"}-${Date.now()}.csv`;
-      link.click();
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "omr_result.csv";
+      a.click();
       URL.revokeObjectURL(url);
-    }
-
-    async function copyShareLink() {
-      try {
-        await navigator.clipboard.writeText($("shareLink").value);
-        $("copyLinkBtn").textContent = "Copied";
-        setTimeout(() => $("copyLinkBtn").textContent = "Copy", 1200);
-      } catch {
-        $("shareLink").select();
-      }
-    }
-
-    function loadFromHash() {
-      const match = location.hash.match(/test=([^&]+)/);
-      if (!match) return false;
-      try {
-        const payload = decodeConfig(match[1]);
-        state.config = payload.config;
-        state.key = payload.key || {};
-        state.questionPdf = payload.questionPdf || null;
-        switchMode("student");
-        setStatus($("sheetStatus"), "Shared test loaded. Enter your details and start.", "good");
-        return true;
-      } catch {
-        setStatus($("sheetStatus"), "The shared link could not be read.", "bad");
-        return false;
-      }
-    }
-
-    $("teacherTab").addEventListener("click", () => switchMode("teacher"));
-    $("studentTab").addEventListener("click", () => switchMode("student"));
-    $("parseBtn").addEventListener("click", buildFromText);
-    $("sampleBtn").addEventListener("click", () => {
-      $("rawKey").value = Array.from({ length: 60 }, (_, i) => `${i + 1}. (${(i % 4) + 1})`).join("\n");
-      buildFromText();
     });
-    $("pdfFile").addEventListener("change", async (event) => {
-      const file = event.target.files[0];
-      if (!file) return;
-      setStatus($("teacherStatus"), "Reading PDF answer key...");
-      try {
-        const text = await extractPdfText(file);
-        $("rawKey").value = text;
-        buildFromText();
-      } catch (error) {
-        setStatus($("teacherStatus"), "PDF text could not be read here. Please copy and paste the answer key text.", "bad");
+
+    function generateCsv() {
+      let csv = "Question,Your Answer,Correct Answer,Status\n";
+      for (let q = 1; q <= state.config.questions; q++) {
+        const userAns = state.answers[q] || "Blank";
+        const correctAns = state.key[q] || "Blank";
+        const status = !state.answers[q] ? "Unattempted" : state.answers[q] === state.key[q] ? "Correct" : "Wrong";
+        csv += `${q},"${userAns}","${correctAns}","${status}"\n`;
+      }
+      return csv;
+    }
+
+    document.addEventListener("fullscreenchange", () => {
+      if (state.started && !document.fullscreenElement && state.mode === "student") {
+        document.body.classList.add("test-blocked");
+        $("fullscreenBlocker").classList.remove("hidden");
       }
     });
-    $("questionPdfFile").addEventListener("change", async (event) => {
-      const file = event.target.files[0];
-      if (!file) return;
-      if (file.type !== "application/pdf") {
-        setStatus($("teacherStatus"), "Please upload a PDF question paper.", "bad");
-        return;
-      }
-      const dataUrl = await fileToDataUrl(file);
-      state.questionPdf = { name: file.name, size: file.size, dataUrl };
-      renderQuestionPdf();
-      if (Object.keys(state.key).length) createShareLink();
-      const sizeMb = file.size / (1024 * 1024);
-      if (sizeMb > 1.2) {
-        setStatus($("teacherStatus"), "Question PDF added, but it may make the student link too large. A smaller/compressed PDF will share more reliably.", "warn");
-      } else {
-        setStatus($("teacherStatus"), "Question PDF added beside the OMR sheet.", "good");
-      }
-    });
-    $("startBtn").addEventListener("click", startTimer);
-    $("submitBtn").addEventListener("click", () => submitTest(false));
-    $("focusSubmitBtn").addEventListener("click", () => submitTest(false));
-    $("returnFullscreenBtn").addEventListener("click", enterFullscreen);
-    $("blockerSubmitBtn").addEventListener("click", () => submitTest(false));
-    $("clearBtn").addEventListener("click", clearAttempt);
-    $("printBtn").addEventListener("click", () => window.print());
-    $("downloadBtn").addEventListener("click", downloadResult);
-    $("copyLinkBtn").addEventListener("click", copyShareLink);
-    document.addEventListener("fullscreenchange", handleFullscreenChange);
 
-    $("downloadBtn").disabled = true;
-    $("focusSubmitBtn").disabled = true;
-    if (!loadFromHash()) {
-      syncInputs();
-      renderSheet();
-    }
+    $("returnFullscreenBtn").addEventListener("click", () => {
+      document.documentElement.requestFullscreen();
+      document.body.classList.remove("test-blocked");
+      $("fullscreenBlocker").classList.add("hidden");
+    });
+
+    loadStudentMode();
+    renderSheet();
   </script>
 </body>
 </html>
