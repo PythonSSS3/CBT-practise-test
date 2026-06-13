@@ -838,7 +838,7 @@ Also supported:
           <div id="questionGrid" class="question-grid" style="margin-top: 14px;"></div>
         </div>
 
-        <div id="keyPanel" class="panel">
+        <div id="keyPanel" class="panel hidden">
           <h2>Parsed key</h2>
           <p id="keyPreview" class="hint">No answer key loaded yet.</p>
         </div>
@@ -983,6 +983,7 @@ Also supported:
 
     function updateKeyPreview() {
       const preview = $("keyPreview");
+      const keyPanel = $("keyPanel");
       if (Object.keys(state.key).length === 0) {
         preview.innerHTML = "No answer key loaded yet.";
         return;
@@ -992,6 +993,10 @@ Also supported:
         .map(([qNum, answer]) => `<div class="key-item"><span class="key-qnum">Q${qNum}</span><span class="key-answer">${answer}</span></div>`)
         .join("");
       preview.innerHTML = `<div class="key-display">${html}</div>`;
+      // Only show key panel in teacher mode
+      if (state.mode === "teacher") {
+        keyPanel.classList.remove("hidden");
+      }
     }
 
     function renderQuestionPdf() {
@@ -1113,8 +1118,8 @@ Also supported:
       state.mode = "teacher";
       $("teacherTab").classList.add("active");
       $("studentTab").classList.remove("active");
-      $("teacherControls").classList.remove("hidden");
       $("studentControls").classList.add("hidden");
+      $("teacherControls").classList.remove("hidden");
       renderSheet();
     });
 
@@ -1122,9 +1127,152 @@ Also supported:
       state.mode = "student";
       $("studentTab").classList.add("active");
       $("teacherTab").classList.remove("active");
-      $("studentControls").classList.remove("hidden");
       $("teacherControls").classList.add("hidden");
+      $("studentControls").classList.remove("hidden");
+      $("keyPanel").classList.add("hidden");
       renderSheet();
+    });
+
+    $("startBtn").addEventListener("click", () => {
+      if (!$("studentName").value.trim()) {
+        alert("Please enter your name");
+        return;
+      }
+      state.started = true;
+      state.remainingSeconds = state.config.minutes * 60;
+      $("startBtn").disabled = true;
+      $("submitBtn").disabled = false;
+      $("studentId").disabled = true;
+      $("studentName").disabled = true;
+      document.body.classList.add("test-active");
+      $("activeTestBar").classList.remove("hidden");
+      document.documentElement.requestFullscreen?.().catch(() => {
+        console.log("Fullscreen request denied");
+      });
+      let timerInterval = setInterval(() => {
+        state.remainingSeconds--;
+        updateTimerDisplay(state.remainingSeconds);
+        if (state.remainingSeconds <= 0) {
+          clearInterval(timerInterval);
+          $("submitBtn").click();
+        }
+      }, 1000);
+      state.timerId = timerInterval;
+      for (const input of $("questionGrid").querySelectorAll("input")) {
+        input.disabled = false;
+      }
+    });
+
+    $("clearBtn").addEventListener("click", () => {
+      if (confirm("Clear all answers?")) {
+        state.answers = {};
+        for (const input of $("questionGrid").querySelectorAll("input")) {
+          input.checked = false;
+        }
+      }
+    });
+
+    $("submitBtn").addEventListener("click", () => {
+      if (!state.started) return;
+      state.submitted = true;
+      clearInterval(state.timerId);
+      document.body.classList.remove("test-active");
+      document.exitFullscreen?.();
+      const correct = Object.entries(state.key).filter(([q, answer]) => state.answers[q] === answer).length;
+      const wrong = Object.entries(state.key).filter(([q, answer]) => state.answers[q] && state.answers[q] !== answer).length;
+      const blank = Object.entries(state.key).filter(([q]) => !state.answers[q]).length;
+      const score = correct * state.config.positive + wrong * state.config.negative + blank * state.config.blank;
+      $("scoreValue").textContent = score.toFixed(2);
+      $("correctValue").textContent = correct;
+      $("wrongValue").textContent = wrong;
+      $("blankValue").textContent = blank;
+      const reviewGrid = $("reviewGrid");
+      reviewGrid.innerHTML = "";
+      for (const [q, correctAnswer] of Object.entries(state.key)) {
+        const studentAnswer = state.answers[Number(q)];
+        const card = document.createElement("div");
+        card.className = "review-card";
+        if (!studentAnswer) {
+          card.classList.add("blank");
+        } else if (studentAnswer === correctAnswer) {
+          card.classList.add("correct");
+        } else {
+          card.classList.add("wrong");
+        }
+        const top = document.createElement("div");
+        top.className = "review-top";
+        top.innerHTML = `<span>Q${q}</span>`;
+        const answer = document.createElement("div");
+        answer.className = "review-answer";
+        if (studentAnswer) {
+          const chip = document.createElement("div");
+          chip.className = `review-chip ${studentAnswer === correctAnswer ? "" : "selected"}`;
+          chip.textContent = studentAnswer;
+          answer.appendChild(chip);
+        }
+        const correct = document.createElement("div");
+        correct.className = "review-chip selected";
+        correct.textContent = correctAnswer;
+        answer.appendChild(correct);
+        card.append(top, answer);
+        reviewGrid.appendChild(card);
+      }
+      const resultRows = $("resultRows");
+      resultRows.innerHTML = "";
+      for (const [q, correctAnswer] of Object.entries(state.key)) {
+        const studentAnswer = state.answers[Number(q)] || "—";
+        const status = !state.answers[Number(q)] ? "Blank" : studentAnswer === correctAnswer ? "Correct" : "Wrong";
+        const row = document.createElement("tr");
+        row.innerHTML = `<td>${q}</td><td>${studentAnswer}</td><td>${correctAnswer}</td><td>${status}</td>`;
+        resultRows.appendChild(row);
+      }
+      $("resultPanel").classList.remove("hidden");
+      state.started = false;
+      $("startBtn").disabled = false;
+      $("submitBtn").disabled = true;
+      $("studentId").disabled = false;
+      $("studentName").disabled = false;
+    });
+
+    $("focusSubmitBtn").addEventListener("click", () => {
+      $("submitBtn").click();
+    });
+
+    $("returnFullscreenBtn").addEventListener("click", () => {
+      document.documentElement.requestFullscreen?.();
+    });
+
+    $("blockerSubmitBtn").addEventListener("click", () => {
+      $("submitBtn").click();
+    });
+
+    document.addEventListener("fullscreenchange", () => {
+      if (state.started && !document.fullscreenElement) {
+        document.body.classList.add("test-blocked");
+        $("fullscreenBlocker").classList.remove("hidden");
+      } else if (document.fullscreenElement) {
+        document.body.classList.remove("test-blocked");
+        $("fullscreenBlocker").classList.add("hidden");
+      }
+    });
+
+    $("printBtn").addEventListener("click", () => {
+      window.print();
+    });
+
+    $("downloadBtn").addEventListener("click", () => {
+      const csv = [["Q", "Your answer", "Correct answer", "Status"]];
+      for (const row of $("resultRows").querySelectorAll("tr")) {
+        csv.push(Array.from(row.querySelectorAll("td")).map((td) => td.textContent));
+      }
+      const content = csv.map((row) => row.map((cell) => `"${cell}"`).join(",")).join("\n");
+      const blob = new Blob([content], { type: "text/csv" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "result.csv";
+      a.click();
+      URL.revokeObjectURL(url);
     });
 
     window.addEventListener("DOMContentLoaded", () => {
