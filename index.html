@@ -550,6 +550,36 @@
 
     .hidden { display: none !important; }
 
+    .key-display {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(60px, 1fr));
+      gap: 8px;
+      margin-top: 12px;
+    }
+
+    .key-item {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 4px;
+      align-items: center;
+      padding: 8px;
+      background: #f9fafb;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      font-size: .85rem;
+    }
+
+    .key-qnum {
+      font-weight: 700;
+      color: var(--ink);
+    }
+
+    .key-answer {
+      font-weight: 850;
+      color: var(--accent-2);
+      text-align: center;
+    }
+
     @media (max-width: 980px) {
       .app-shell { grid-template-columns: 1fr; }
       aside { position: relative; height: auto; }
@@ -951,6 +981,32 @@ Also supported:
       return Number(value) > 0 ? `+${Number(value)}` : `${Number(value)}`;
     }
 
+    function updateKeyPreview() {
+      const preview = $("keyPreview");
+      if (Object.keys(state.key).length === 0) {
+        preview.innerHTML = "No answer key loaded yet.";
+        return;
+      }
+      const html = Object.entries(state.key)
+        .sort((a, b) => Number(a[0]) - Number(b[0]))
+        .map(([qNum, answer]) => `<div class="key-item"><span class="key-qnum">Q${qNum}</span><span class="key-answer">${answer}</span></div>`)
+        .join("");
+      preview.innerHTML = `<div class="key-display">${html}</div>`;
+    }
+
+    function renderQuestionPdf() {
+      const viewer = $("questionPdfViewer");
+      const status = $("questionPdfStatus");
+      if (!state.questionPdf || !state.questionPdf.dataUrl) {
+        viewer.classList.add("hidden");
+        status.classList.remove("hidden");
+        return;
+      }
+      status.classList.add("hidden");
+      viewer.classList.remove("hidden");
+      viewer.src = state.questionPdf.dataUrl;
+    }
+
     function renderSheet() {
       syncInputs();
       renderQuestionPdf();
@@ -993,267 +1049,97 @@ Also supported:
       updateKeyPreview();
     }
 
-    function renderQuestionPdf() {
-      const viewer = $("questionPdfViewer");
-      const status = $("questionPdfStatus");
-      if (!state.questionPdf || !state.questionPdf.dataUrl) {
-        viewer.classList.add("hidden");
-        viewer.removeAttribute("src");
-        status.classList.remove("hidden");
-        status.textContent = "Upload a question PDF to show it here.";
-        return;
-      }
-      viewer.src = state.questionPdf.dataUrl;
-      viewer.classList.remove("hidden");
-      status.classList.add("hidden");
-    }
-
-    function updateKeyPreview() {
-      const preview = Object.entries(state.key).map(([q, a]) => `${q}. ${a}`).join(" • ");
-      $("keyPreview").textContent = preview || "No answer key loaded yet.";
-    }
-
-    function generateStudentLink() {
-      const encoded = encodeConfig();
-      const params = new URLSearchParams({
-        student: "1",
-        data: encoded
-      });
-      return `${window.location.origin}${window.location.pathname}?${params.toString()}`;
-    }
-
-    async function handleParse() {
-      readTeacherConfig();
-      const text = $("rawKey").value.trim();
-      if (!text) {
-        setStatus($("teacherStatus"), "Please paste an answer key or upload a PDF.", "warn");
-        return;
-      }
-      state.key = parseAnswerKey(text, state.config.questions, state.config.options);
-      if (Object.keys(state.key).length === 0) {
-        setStatus($("teacherStatus"), "Could not parse any answers from the key.", "bad");
-        return;
-      }
-      renderSheet();
-      $("sharePanel").classList.remove("hidden");
-      $("shareLink").value = generateStudentLink();
-      setStatus($("teacherStatus"), `Parsed ${Object.keys(state.key).length} answers. Share the link!`, "good");
-    }
-
-    function handlePdfUpload(e, isQuestion = false) {
-      const file = e.target.files[0];
-      if (!file) return;
-      if (isQuestion) {
-        fileToDataUrl(file).then(url => {
-          state.questionPdf = { name: file.name, dataUrl: url };
-          renderQuestionPdf();
-        });
-      } else {
-        extractPdfText(file).then(text => {
-          $("rawKey").value = text;
-          setStatus($("teacherStatus"), "PDF extracted. Review and parse.", "good");
-        }).catch(err => {
-          setStatus($("teacherStatus"), `Failed to extract PDF: ${err.message}`, "bad");
-        });
-      }
-    }
-
-    function loadStudentMode() {
-      const params = new URLSearchParams(window.location.search);
-      if (!params.has("student")) return;
-      const data = params.get("data");
-      if (!data) return;
-      const decoded = decodeConfig(data);
-      if (!decoded) return;
-      state.config = decoded.config;
-      state.key = decoded.key;
-      state.mode = "student";
-      $("teacherControls").classList.add("hidden");
-      $("studentControls").classList.remove("hidden");
-      $("studentTab").click();
-      renderSheet();
-    }
-
-    function startTest() {
-      state.started = true;
-      state.remainingSeconds = state.config.minutes * 60;
-      $("startBtn").disabled = true;
-      $("submitBtn").disabled = false;
-      document.body.classList.add("test-active");
-      $("activeTestBar").classList.remove("hidden");
-      document.querySelectorAll(".question input").forEach(input => input.disabled = false);
-      updateTimerDisplay(state.remainingSeconds);
-      state.timerId = setInterval(() => {
-        state.remainingSeconds--;
-        updateTimerDisplay(state.remainingSeconds);
-        if (state.remainingSeconds <= 0) {
-          clearInterval(state.timerId);
-          handleSubmit();
-        }
-      }, 1000);
-      if (document.documentElement.requestFullscreen) {
-        document.documentElement.requestFullscreen().catch(() => {
-          console.log("Fullscreen request denied");
-        });
-      }
-    }
-
     function updateTimerDisplay(seconds) {
       const mins = Math.floor(seconds / 60);
       const secs = seconds % 60;
-      const display = `${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`;
+      const display = `${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
       $("timer").textContent = display;
       $("focusTimer").textContent = display;
-      if (seconds <= 300) {
-        $("timer").classList.add("warning");
-        $("focusTimer").classList.add("warning");
-      }
     }
 
-    function handleSubmit() {
-      clearInterval(state.timerId);
-      state.submitted = true;
-      document.body.classList.remove("test-active");
-      $("activeTestBar").classList.add("hidden");
-      const result = calculateScore();
-      renderResult(result);
-    }
-
-    function calculateScore() {
-      let correct = 0, wrong = 0, blank = 0;
-      for (let q = 1; q <= state.config.questions; q++) {
-        const userAns = state.answers[q];
-        const correctAns = state.key[q];
-        if (!userAns) blank++;
-        else if (userAns === correctAns) correct++;
-        else wrong++;
+    $("pdfFile").addEventListener("change", async (e) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      try {
+        const text = await extractPdfText(file);
+        $("rawKey").value = text;
+        setStatus($("teacherStatus"), "PDF text extracted. Review and parse below.", "good");
+      } catch (error) {
+        setStatus($("teacherStatus"), "Failed to extract PDF text.", "bad");
       }
-      const score = correct * state.config.positive + wrong * state.config.negative + blank * state.config.blank;
-      return { correct, wrong, blank, score };
-    }
-
-    function renderResult(result) {
-      $("resultPanel").classList.remove("hidden");
-      $("scoreValue").textContent = result.score.toFixed(2);
-      $("correctValue").textContent = result.correct;
-      $("wrongValue").textContent = result.wrong;
-      $("blankValue").textContent = result.blank;
-
-      const reviewGrid = $("reviewGrid");
-      reviewGrid.innerHTML = "";
-      for (let q = 1; q <= state.config.questions; q++) {
-        const card = document.createElement("div");
-        card.className = "review-card";
-        const userAns = state.answers[q];
-        const correctAns = state.key[q];
-        if (!userAns) {
-          card.classList.add("blank");
-          card.innerHTML = `<div class="review-top"><strong>Q${q}</strong></div><div class="hint">Unattempted</div>`;
-        } else if (userAns === correctAns) {
-          card.classList.add("correct");
-          card.innerHTML = `<div class="review-top"><strong>Q${q}</strong>✓</div><div class="hint">Correct</div>`;
-        } else {
-          card.classList.add("wrong");
-          card.innerHTML = `<div class="review-top"><strong>Q${q}</strong>✗</div><div class="review-answer"><div class="review-chip selected">${userAns}</div><span class="hint">vs</span><div class="review-chip">${correctAns}</div></div>`;
-        }
-        reviewGrid.appendChild(card);
-      }
-
-      const tbody = $("resultRows");
-      tbody.innerHTML = "";
-      for (let q = 1; q <= state.config.questions; q++) {
-        const userAns = state.answers[q] || "—";
-        const correctAns = state.key[q] || "—";
-        const match = state.answers[q] === state.key[q];
-        const status = !state.answers[q] ? "Blank" : match ? "✓ Correct" : "✗ Wrong";
-        const row = document.createElement("tr");
-        row.innerHTML = `<td>${q}</td><td>${userAns}</td><td>${correctAns}</td><td>${status}</td>`;
-        tbody.appendChild(row);
-      }
-    }
-
-    $("teacherTab").addEventListener("click", () => {
-      $("teacherControls").classList.remove("hidden");
-      $("studentControls").classList.add("hidden");
-      $("teacherTab").classList.add("active");
-      $("studentTab").classList.remove("active");
-      state.mode = "teacher";
     });
 
-    $("studentTab").addEventListener("click", () => {
-      $("teacherControls").classList.add("hidden");
-      $("studentControls").classList.remove("hidden");
-      $("studentTab").classList.add("active");
-      $("teacherTab").classList.remove("active");
-      state.mode = "student";
+    $("questionPdfFile").addEventListener("change", async (e) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      try {
+        const dataUrl = await fileToDataUrl(file);
+        state.questionPdf = { dataUrl, file };
+        renderQuestionPdf();
+        setStatus($("teacherStatus"), "Question PDF uploaded successfully.", "good");
+      } catch (error) {
+        setStatus($("teacherStatus"), "Failed to upload PDF.", "bad");
+      }
     });
 
-    $("parseBtn").addEventListener("click", handleParse);
+    $("parseBtn").addEventListener("click", () => {
+      readTeacherConfig();
+      const rawText = $("rawKey").value.trim();
+      state.key = parseAnswerKey(rawText, state.config.questions, state.config.options);
+      if (Object.keys(state.key).length === 0) {
+        setStatus($("teacherStatus"), "No answers parsed. Check format.", "warn");
+        return;
+      }
+      setStatus($("teacherStatus"), `Parsed ${Object.keys(state.key).length} answers.`, "good");
+      renderSheet();
+      $("sharePanel").classList.remove("hidden");
+      const encoded = encodeConfig();
+      const baseUrl = window.location.origin + window.location.pathname;
+      $("shareLink").value = `${baseUrl}?data=${encoded}`;
+    });
+
     $("sampleBtn").addEventListener("click", () => {
-      const sample = "1. A\n2. B\n3. C\n4. D\n5. E";
+      const sample = Array.from({ length: 10 }, (_, i) => `${i + 1}. ${letters[Math.floor(Math.random() * state.config.options)]}`).join("\n");
       $("rawKey").value = sample;
-      setStatus($("teacherStatus"), "Sample key loaded. Adjust as needed.", "good");
-    });
-
-    $("pdfFile").addEventListener("change", (e) => handlePdfUpload(e, false));
-    $("questionPdfFile").addEventListener("change", (e) => handlePdfUpload(e, true));
-
-    $("startBtn").addEventListener("click", startTest);
-    $("submitBtn").addEventListener("click", handleSubmit);
-    $("focusSubmitBtn").addEventListener("click", handleSubmit);
-    $("blockerSubmitBtn").addEventListener("click", handleSubmit);
-
-    $("clearBtn").addEventListener("click", () => {
-      state.answers = {};
-      document.querySelectorAll(".question input").forEach(input => input.checked = false);
-      setStatus($("teacherStatus"), "Answers cleared.", "good");
     });
 
     $("copyLinkBtn").addEventListener("click", () => {
       $("shareLink").select();
       document.execCommand("copy");
-      setStatus($("teacherStatus"), "Link copied to clipboard!", "good");
+      setStatus($("teacherStatus"), "Link copied to clipboard.", "good");
     });
 
-    $("printBtn").addEventListener("click", () => window.print());
-
-    $("downloadBtn").addEventListener("click", () => {
-      const csv = generateCsv();
-      const blob = new Blob([csv], { type: "text/csv" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = "omr_result.csv";
-      a.click();
-      URL.revokeObjectURL(url);
+    $("teacherTab").addEventListener("click", () => {
+      state.mode = "teacher";
+      $("teacherTab").classList.add("active");
+      $("studentTab").classList.remove("active");
+      $("teacherControls").classList.remove("hidden");
+      $("studentControls").classList.add("hidden");
+      renderSheet();
     });
 
-    function generateCsv() {
-      let csv = "Question,Your Answer,Correct Answer,Status\n";
-      for (let q = 1; q <= state.config.questions; q++) {
-        const userAns = state.answers[q] || "Blank";
-        const correctAns = state.key[q] || "Blank";
-        const status = !state.answers[q] ? "Unattempted" : state.answers[q] === state.key[q] ? "Correct" : "Wrong";
-        csv += `${q},"${userAns}","${correctAns}","${status}"\n`;
+    $("studentTab").addEventListener("click", () => {
+      state.mode = "student";
+      $("studentTab").classList.add("active");
+      $("teacherTab").classList.remove("active");
+      $("studentControls").classList.remove("hidden");
+      $("teacherControls").classList.add("hidden");
+      renderSheet();
+    });
+
+    window.addEventListener("DOMContentLoaded", () => {
+      const params = new URLSearchParams(window.location.search);
+      const data = params.get("data");
+      if (data) {
+        const decoded = decodeConfig(data);
+        if (decoded) {
+          state.config = decoded.config;
+          state.key = decoded.key;
+          $("studentTab").click();
+          renderSheet();
+        }
       }
-      return csv;
-    }
-
-    document.addEventListener("fullscreenchange", () => {
-      if (state.started && !document.fullscreenElement && state.mode === "student") {
-        document.body.classList.add("test-blocked");
-        $("fullscreenBlocker").classList.remove("hidden");
-      }
     });
-
-    $("returnFullscreenBtn").addEventListener("click", () => {
-      document.documentElement.requestFullscreen();
-      document.body.classList.remove("test-blocked");
-      $("fullscreenBlocker").classList.add("hidden");
-    });
-
-    loadStudentMode();
-    renderSheet();
   </script>
 </body>
 </html>
